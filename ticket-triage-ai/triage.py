@@ -23,6 +23,23 @@ def read_csv(path):
     return pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
 
 
+def normalize_priorities(values):
+    return values.str.lower().replace({
+        "low": "низкий", "medium": "стандартный", "standard": "стандартный",
+        "high": "высокий", "critical": "критический", "средний": "стандартный",
+    })
+
+
+def is_synthetic(frame):
+    data = frame.rename(columns=ALIASES)
+    markers = data["id"].astype(str).str.startswith("SYN-")
+    if "data_origin" in data:
+        markers = markers | data.data_origin.eq("SYNTHETIC")
+    if markers.any() and not markers.all():
+        raise ValueError("Нельзя смешивать синтетические и исторические строки")
+    return bool(markers.all() and len(data))
+
+
 def validate(frame):
     frame = frame.rename(columns=ALIASES)
     if frame.columns.has_duplicates or set(COLUMNS) - set(frame.columns):
@@ -33,10 +50,7 @@ def validate(frame):
     data["x"] = (data.subject + " " + data.text).str.strip()
     if data.x.eq("").any():
         raise ValueError("Тема и текст одновременно пусты")
-    data.priority = data.priority.str.lower().replace({
-        "low": "низкий", "medium": "стандартный", "high": "высокий",
-        "critical": "критический", "средний": "стандартный",
-    })
+    data.priority = normalize_priorities(data.priority)
     if set(data.priority) != set(PRIORITIES) or data.department.nunique() < 2:
         raise ValueError("Нужны все четыре допустимых приоритета и минимум два подразделения")
     return data.sort_values("id").set_index("id")
@@ -55,9 +69,11 @@ def synthetic():
 
 
 def split(data, demo, test_ids=None):
-    size = 64 if demo else 2000
-    if len(data) != (384 if demo else 12000):
-        raise ValueError("Проверьте режим и количество заявок")
+    size = 2000
+    if demo and len(data) == 384:
+        size = 64
+    elif len(data) != 12000:
+        raise ValueError("Ожидаются 12 000 строк либо 384 строки малого синтетического smoke test")
     if test_ids is None:
         pool, test = train_test_split(data, test_size=size, stratify=data.priority, random_state=SEED)
     else:
@@ -95,6 +111,7 @@ def score(model, part, task, labels):
 
 def experiment(frame, out, demo=False, test_ids=None):
     data = validate(frame)
+    demo = demo or is_synthetic(frame)
     train, val, test = split(data, demo, test_ids)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=False)
